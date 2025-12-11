@@ -15,6 +15,10 @@ COPY . .
 # Expose the port Render sets
 ENV PORT 5000
 
-# Start the app using Gunicorn
+# Copy all files
+COPY . .
+
+# Set the command to run the app with Gunicorn
 CMD ["gunicorn", "server:app", "--bind", "0.0.0.0:$PORT"]
+
 
