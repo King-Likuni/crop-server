@@ -45,6 +45,6 @@ def predict():
     return jsonify({"recommended_crop": crop_name})
 
 if __name__ == "__main__":
-    # Optional for local testing only
     app.run(host="0.0.0.0", port=5000, debug=True)
+
 

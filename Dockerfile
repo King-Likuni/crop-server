@@ -17,3 +17,4 @@ ENV PORT 5000
 
 # Start the app using Gunicorn
 CMD ["gunicorn", "server:app", "--bind", "0.0.0.0:$PORT"]
+
