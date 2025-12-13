@@ -1,21 +1,31 @@
 from flask import Flask, request, jsonify
 import joblib
 import traceback
+import os
 
 app = Flask(__name__)
 
 # Load ML model and label encoder
 model = None
 le = None
+model_loaded = False
+
 try:
-    model = joblib.load("crop_recommendation_model.pkl")
-    le = joblib.load("label_encoder.pkl")
-    print("✅ Model loaded successfully")
+    # Check if files exist
+    if os.path.exists("crop_recommendation_model.pkl") and os.path.exists("label_encoder.pkl"):
+        model = joblib.load("crop_recommendation_model.pkl")
+        le = joblib.load("label_encoder.pkl")
+        model_loaded = True
+        print("✅ Model loaded successfully")
+    else:
+        print("❌ Model files not found")
+        print(f"Current directory: {os.getcwd()}")
+        print(f"Files in directory: {os.listdir('.')}")
 except Exception as e:
     print("⚠️ Could not load model:", e)
     print(traceback.format_exc())
 
-# Store latest data
+# Store latest data - MUST be initialized
 latest_sensor_data = None
 latest_recommendation = None
 
@@ -36,8 +46,8 @@ def sensor_data():
         
         print(f"📡 Received sensor data: {latest_sensor_data}")
         
-        # Make prediction but don't send it back
-        if model is not None and le is not None:
+        # Make prediction if model is loaded
+        if model_loaded:
             try:
                 features = [
                     latest_sensor_data["N"],
@@ -54,7 +64,14 @@ def sensor_data():
             except Exception as e:
                 print(f"❌ Prediction error: {e}")
                 print(traceback.format_exc())
-                latest_recommendation = None
+                latest_recommendation = "Prediction failed"
+        else:
+            print("⚠️ Model not loaded, using fallback")
+            # Fallback: Simple rule-based recommendation
+            if latest_sensor_data["temperature"] > 25:
+                latest_recommendation = "maize"
+            else:
+                latest_recommendation = "wheat"
         
         # Return ONLY confirmation, NOT recommendation
         return jsonify({
@@ -69,37 +86,44 @@ def sensor_data():
 
 @app.route("/recommend-crops", methods=["GET"])
 def recommend_crops():
+    global latest_recommendation  # Add this line!
     try:
-        print(f"🔍 Recommend crops called. Model: {model is not None}, Data: {latest_sensor_data}")
-        
-        if model is None:
-            return jsonify({"error": "Model not loaded on server"}), 500
+        print(f"🔍 Recommend crops called. Model loaded: {model_loaded}, Data: {latest_sensor_data}")
         
         if latest_sensor_data is None:
             return jsonify({"error": "No sensor data available. ESP32 needs to send data first."}), 404
         
-        # Make sure we have a recommendation
-        if latest_recommendation is None:
-            try:
-                features = [
-                    latest_sensor_data["N"],
-                    latest_sensor_data["P"],
-                    latest_sensor_data["K"],
-                    latest_sensor_data["rainfall"],
-                    latest_sensor_data["temperature"]
-                ]
-                print(f"🤖 Making new prediction with: {features}")
-                prediction_index = model.predict([features])[0]
-                latest_recommendation = le.inverse_transform([prediction_index])[0]
-                print(f"🌱 New prediction: {latest_recommendation}")
-            except Exception as e:
-                print(f"❌ Prediction failed: {e}")
-                print(traceback.format_exc())
-                return jsonify({"error": f"Prediction failed: {str(e)}"}), 500
+        # If no recommendation yet, create one
+        if latest_recommendation is None:  # This line was causing the error
+            if model_loaded:
+                try:
+                    features = [
+                        latest_sensor_data["N"],
+                        latest_sensor_data["P"],
+                        latest_sensor_data["K"],
+                        latest_sensor_data["rainfall"],
+                        latest_sensor_data["temperature"]
+                    ]
+                    prediction_index = model.predict([features])[0]
+                    latest_recommendation = le.inverse_transform([prediction_index])[0]
+                except Exception as e:
+                    print(f"❌ Prediction failed: {e}")
+                    # Fallback
+                    if latest_sensor_data["temperature"] > 25:
+                        latest_recommendation = "maize"
+                    else:
+                        latest_recommendation = "wheat"
+            else:
+                # Fallback without model
+                if latest_sensor_data["temperature"] > 25:
+                    latest_recommendation = "maize"
+                else:
+                    latest_recommendation = "wheat"
         
         return jsonify({
             "recommended_crops": [latest_recommendation],
             "sensor_data": latest_sensor_data,
+            "model_used": "ML model" if model_loaded else "fallback",
             "status": "success"
         })
     except Exception as e:
@@ -151,7 +175,7 @@ def fertilizer():
 def home():
     return jsonify({
         "status": "online",
-        "model_loaded": model is not None,
+        "model_loaded": model_loaded,
         "has_sensor_data": latest_sensor_data is not None,
         "latest_recommendation": latest_recommendation,
         "endpoints": [
