@@ -6,7 +6,7 @@ import joblib
 app = Flask(__name__)
 
 # ---------------------------
-# Load ML Model (Crop Recommendation)
+# Load ML Model (optional)
 # ---------------------------
 try:
     model = joblib.load("crop_recommendation_model.pkl")
@@ -18,12 +18,12 @@ except Exception as e:
     use_ml = False
 
 # ---------------------------
-# Sensor data store
+# Sensor data store (updated via ESP POST)
 # ---------------------------
 SENSOR_DATA = {
-    "N": 0,
-    "P": 0,
-    "K": 0,
+    "N": 70,
+    "P": 40,
+    "K": 50,
     "ph": 6.5,
     "humidity": 50,
     "temperature": 25,
@@ -37,6 +37,9 @@ IDEAL_SOIL = {
     "Maize": {"N": 120, "P": 60, "K": 80, "ph": 6.0, "humidity": 50},
     "Mango": {"N": 30, "P": 20, "K": 25, "ph": 6.5, "humidity": 60},
     "Groundnuts": {"N": 40, "P": 30, "K": 60, "ph": 6.0, "humidity": 55},
+    "Cowpeas": {"N": 50, "P": 25, "K": 55, "ph": 6.2, "humidity": 50},
+    "Beans": {"N": 60, "P": 30, "K": 60, "ph": 6.0, "humidity": 55},
+    "Watermelon": {"N": 40, "P": 20, "K": 50, "ph": 6.5, "humidity": 60}
 }
 
 # Fertilizer conversion multipliers
@@ -54,16 +57,18 @@ FERTILIZER_CONVERSION = {
 def home():
     return jsonify({"message": "Crop Recommendation API is running!"})
 
-# Receive sensor data from ESP
+# ESP posts sensor data here
 @app.route("/sensor-data", methods=["POST"])
 def receive_sensor_data():
     global SENSOR_DATA
     data = request.get_json()
-    print("Received sensor data:", data)
+    if not data:
+        return jsonify({"status": "error", "message": "No JSON received"}), 400
     SENSOR_DATA.update(data)
+    print("Received sensor data:", SENSOR_DATA)
     return jsonify({"status": "success"})
 
-# Recommend crops based on current sensor data
+# Recommend crops based on sensor data
 @app.route("/recommend-crops", methods=["GET"])
 def recommend_crops():
     try:
