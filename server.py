@@ -1,127 +1,62 @@
-import os
 from flask import Flask, request, jsonify
 import joblib
 
 app = Flask(__name__)
 
-# ---------------------------
-# Load ML Model (Crop Recommendation)
-# ---------------------------
+# Store latest sensor data here
+latest_sensor_data = {}
+
+# Load ML model
 try:
     model = joblib.load("crop_recommendation_model.pkl")
     le = joblib.load("label_encoder.pkl")
     use_ml = True
-    print("✅ ML Model Loaded Successfully")
+    print("ML Model Loaded")
 except Exception as e:
-    print("⚠️ Could not load ML model:", e)
+    print("Could not load ML model:", e)
     use_ml = False
 
-# ---------------------------
-# Sensor data placeholder (update from ESP POST)
-# ---------------------------
-SENSOR_DATA = {
-    "N": 70,
-    "P": 40,
-    "K": 50,
-    "ph": 6.5,
-    "temperature": 25,
-    "rainfall": 0,
-    "humidity": 50,   # for display only
-    "moisture": 20    # for display only
-}
-
-# ---------------------------
-# Ideal soil data per crop
-# ---------------------------
-IDEAL_SOIL = {
-    "Maize": {"N": 120, "P": 60, "K": 80, "ph": 6.0, "humidity": 50},
-    "Mango": {"N": 30, "P": 20, "K": 25, "ph": 6.5, "humidity": 60},
-    "Groundnuts": {"N": 40, "P": 30, "K": 60, "ph": 6.0, "humidity": 55},
-}
-
-FERTILIZER_CONVERSION = {
-    "N": ("Urea", 0.5),
-    "P": ("Superphosphate", 2),
-    "K": ("Muriate of Potash", 1.5)
-}
-
-# ---------------------------
-# Routes
-# ---------------------------
-@app.route("/", methods=["GET"])
-def home():
-    return jsonify({"message": "Crop Recommendation API is running!"})
-
+# Endpoint to receive ESP data
 @app.route("/sensor-data", methods=["POST"])
-def update_sensor_data():
-    try:
-        data = request.get_json()
-        for key in ["N", "P", "K", "ph", "temperature", "rainfall", "humidity", "moisture"]:
-            if key in data:
-                SENSOR_DATA[key] = data[key]
-        return jsonify({"status": "success", "received": data})
-    except Exception as e:
-        return jsonify({"status": "error", "error": str(e)}), 400
+def sensor_data():
+    global latest_sensor_data
+    data = request.get_json()
+    if not data:
+        return jsonify({"status": "error", "message": "No data received"}), 400
+    
+    # Only keep the features your model uses
+    latest_sensor_data = {
+        "N": data.get("N"),
+        "P": data.get("P"),
+        "K": data.get("K"),
+        "temperature": data.get("temperature"),
+        "rainfall": data.get("rainfall"),
+        "ph": data.get("ph")
+    }
 
+    return jsonify({"status": "success", "received": latest_sensor_data}), 200
+
+# Endpoint to recommend crops
 @app.route("/recommend-crops", methods=["GET"])
 def recommend_crops():
-    if not use_ml:
-        return jsonify({"error": "ML model not loaded"}), 500
+    if not latest_sensor_data:
+        return jsonify({"recommended_crops": [], "message": "No sensor data yet"}), 200
 
+    # Use your ML model
     try:
         features = [[
-            SENSOR_DATA.get("N", 0),
-            SENSOR_DATA.get("P", 0),
-            SENSOR_DATA.get("K", 0),
-            SENSOR_DATA.get("temperature", 0),
-            SENSOR_DATA.get("ph", 0),
-            SENSOR_DATA.get("rainfall", 0)
+            latest_sensor_data["N"],
+            latest_sensor_data["P"],
+            latest_sensor_data["K"],
+            latest_sensor_data["temperature"],
+            latest_sensor_data["rainfall"],
+            latest_sensor_data["ph"]
         ]]
-
-        prediction = model.predict(features)[0]
-        crop_name = le.inverse_transform([prediction])[0]
-        return jsonify({"recommended_crops": [crop_name]})
+        preds = model.predict(features)
+        crops = le.inverse_transform(preds)
+        return jsonify({"recommended_crops": list(crops)}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route("/crop-soil", methods=["GET"])
-def crop_soil():
-    crop = request.args.get("crop")
-    if not crop:
-        return jsonify({"error": "Crop not specified"}), 400
-
-    soil_info = IDEAL_SOIL.get(crop)
-    if not soil_info:
-        return jsonify({"error": "Crop not found"}), 404
-
-    return jsonify(soil_info)
-
-@app.route("/fertilizer", methods=["GET"])
-def fertilizer():
-    crop = request.args.get("crop")
-    if not crop:
-        return jsonify({"error": "Crop not specified"}), 400
-
-    ideal = IDEAL_SOIL.get(crop)
-    if not ideal:
-        return jsonify({"error": "Crop not found"}), 404
-
-    plan = {}
-    for nutrient in ["N", "P", "K"]:
-        deficit = max(0, ideal[nutrient] - SENSOR_DATA.get(nutrient, 0))
-        fertilizer_name, multiplier = FERTILIZER_CONVERSION[nutrient]
-        amount = round(deficit * multiplier, 2)
-        plan[nutrient] = {
-            "deficit": deficit,
-            "fertilizer": fertilizer_name,
-            "amount_kg_per_ha": amount
-        }
-
-    return jsonify(plan)
-
-# ---------------------------
-# Run app
-# ---------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=5000)
