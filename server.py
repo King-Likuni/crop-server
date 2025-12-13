@@ -17,16 +17,17 @@ except Exception as e:
     use_ml = False
 
 # ---------------------------
-# Sensor data (updated by ESP)
+# Sensor data placeholder (update from ESP POST)
 # ---------------------------
 SENSOR_DATA = {
-    "N": 0,
-    "P": 0,
-    "K": 0,
-    "ph": 0,
-    "humidity": 0,
-    "temperature": 0,
-    "rainfall": 0
+    "N": 70,
+    "P": 40,
+    "K": 50,
+    "ph": 6.5,
+    "temperature": 25,
+    "rainfall": 0,
+    "humidity": 50,   # for display only
+    "moisture": 20    # for display only
 }
 
 # ---------------------------
@@ -36,10 +37,8 @@ IDEAL_SOIL = {
     "Maize": {"N": 120, "P": 60, "K": 80, "ph": 6.0, "humidity": 50},
     "Mango": {"N": 30, "P": 20, "K": 25, "ph": 6.5, "humidity": 60},
     "Groundnuts": {"N": 40, "P": 30, "K": 60, "ph": 6.0, "humidity": 55},
-    # Add more crops here
 }
 
-# Fertilizer conversion multipliers
 FERTILIZER_CONVERSION = {
     "N": ("Urea", 0.5),
     "P": ("Superphosphate", 2),
@@ -49,23 +48,20 @@ FERTILIZER_CONVERSION = {
 # ---------------------------
 # Routes
 # ---------------------------
-
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({"message": "Crop Recommendation API is running!"})
-
 
 @app.route("/sensor-data", methods=["POST"])
 def update_sensor_data():
     try:
         data = request.get_json()
-        for key in SENSOR_DATA.keys():
+        for key in ["N", "P", "K", "ph", "temperature", "rainfall", "humidity", "moisture"]:
             if key in data:
                 SENSOR_DATA[key] = data[key]
-        return jsonify({"status": "success", "sensor_data": SENSOR_DATA})
+        return jsonify({"status": "success", "received": data})
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 400
-
 
 @app.route("/recommend-crops", methods=["GET"])
 def recommend_crops():
@@ -78,16 +74,15 @@ def recommend_crops():
             SENSOR_DATA.get("P", 0),
             SENSOR_DATA.get("K", 0),
             SENSOR_DATA.get("temperature", 0),
-            SENSOR_DATA.get("humidity", 0),
             SENSOR_DATA.get("ph", 0),
             SENSOR_DATA.get("rainfall", 0)
         ]]
+
         prediction = model.predict(features)[0]
         crop_name = le.inverse_transform([prediction])[0]
         return jsonify({"recommended_crops": [crop_name]})
     except Exception as e:
-        return jsonify({"error": f"Prediction failed: {e}"}), 500
-
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/crop-soil", methods=["GET"])
 def crop_soil():
@@ -100,7 +95,6 @@ def crop_soil():
         return jsonify({"error": "Crop not found"}), 404
 
     return jsonify(soil_info)
-
 
 @app.route("/fertilizer", methods=["GET"])
 def fertilizer():
@@ -124,7 +118,6 @@ def fertilizer():
         }
 
     return jsonify(plan)
-
 
 # ---------------------------
 # Run app
