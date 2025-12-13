@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 import joblib
+import traceback
 
 app = Flask(__name__)
 
@@ -12,6 +13,7 @@ try:
     print("✅ Model loaded successfully")
 except Exception as e:
     print("⚠️ Could not load model:", e)
+    print(traceback.format_exc())
 
 # Store latest data
 latest_sensor_data = None
@@ -23,7 +25,7 @@ def sensor_data():
     try:
         data = request.get_json()
         
-        # Extract only sensor data
+        # Store only sensor data
         latest_sensor_data = {
             "N": float(data.get("N", 0)),
             "P": float(data.get("P", 0)),
@@ -34,75 +36,76 @@ def sensor_data():
         
         print(f"📡 Received sensor data: {latest_sensor_data}")
         
-        # Use model to predict crop (if model is loaded)
-        if model and le:
-            features = [
-                latest_sensor_data["N"],
-                latest_sensor_data["P"],
-                latest_sensor_data["K"],
-                latest_sensor_data["rainfall"],
-                latest_sensor_data["temperature"]
-            ]
-            
-            print(f"🤖 Predicting with features: {features}")
-            
+        # Make prediction but don't send it back
+        if model is not None and le is not None:
             try:
+                features = [
+                    latest_sensor_data["N"],
+                    latest_sensor_data["P"],
+                    latest_sensor_data["K"],
+                    latest_sensor_data["rainfall"],
+                    latest_sensor_data["temperature"]
+                ]
+                print(f"🤖 Predicting with features: {features}")
                 prediction_index = model.predict([features])[0]
                 crop_name = le.inverse_transform([prediction_index])[0]
                 latest_recommendation = crop_name
                 print(f"🌱 Model predicted: {crop_name}")
             except Exception as e:
                 print(f"❌ Prediction error: {e}")
-                latest_recommendation = "Prediction failed"
-        else:
-            latest_recommendation = "Model not loaded"
+                print(traceback.format_exc())
+                latest_recommendation = None
         
-        # Return only confirmation, NOT the recommendation
+        # Return ONLY confirmation, NOT recommendation
         return jsonify({
             "status": "success",
             "message": "Sensor data received",
-            "data_received": {
-                "N": latest_sensor_data["N"],
-                "P": latest_sensor_data["P"],
-                "K": latest_sensor_data["K"],
-                "rainfall": latest_sensor_data["rainfall"],
-                "temperature": latest_sensor_data["temperature"]
-            }
-            # Note: We don't return recommendation here
+            "data": latest_sensor_data
         })
     except Exception as e:
         print(f"❌ Error in sensor_data: {str(e)}")
+        print(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
 @app.route("/recommend-crops", methods=["GET"])
 def recommend_crops():
-    """Get the crop recommendation based on latest sensor data"""
-    if not model:
-        return jsonify({"error": "Model not loaded"}), 500
-    
-    if not latest_sensor_data:
-        return jsonify({"error": "No sensor data available"}), 404
-    
-    if not latest_recommendation:
-        # Make prediction now
-        try:
-            features = [
-                latest_sensor_data["N"],
-                latest_sensor_data["P"],
-                latest_sensor_data["K"],
-                latest_sensor_data["rainfall"],
-                latest_sensor_data["temperature"]
-            ]
-            prediction_index = model.predict([features])[0]
-            latest_recommendation = le.inverse_transform([prediction_index])[0]
-        except Exception as e:
-            return jsonify({"error": f"Prediction failed: {str(e)}"}), 500
-    
-    return jsonify({
-        "recommended_crops": [latest_recommendation],
-        "sensor_data": latest_sensor_data,
-        "prediction_time": "latest"  # or add timestamp
-    })
+    try:
+        print(f"🔍 Recommend crops called. Model: {model is not None}, Data: {latest_sensor_data}")
+        
+        if model is None:
+            return jsonify({"error": "Model not loaded on server"}), 500
+        
+        if latest_sensor_data is None:
+            return jsonify({"error": "No sensor data available. ESP32 needs to send data first."}), 404
+        
+        # Make sure we have a recommendation
+        if latest_recommendation is None:
+            try:
+                features = [
+                    latest_sensor_data["N"],
+                    latest_sensor_data["P"],
+                    latest_sensor_data["K"],
+                    latest_sensor_data["rainfall"],
+                    latest_sensor_data["temperature"]
+                ]
+                print(f"🤖 Making new prediction with: {features}")
+                prediction_index = model.predict([features])[0]
+                latest_recommendation = le.inverse_transform([prediction_index])[0]
+                print(f"🌱 New prediction: {latest_recommendation}")
+            except Exception as e:
+                print(f"❌ Prediction failed: {e}")
+                print(traceback.format_exc())
+                return jsonify({"error": f"Prediction failed: {str(e)}"}), 500
+        
+        return jsonify({
+            "recommended_crops": [latest_recommendation],
+            "sensor_data": latest_sensor_data,
+            "status": "success"
+        })
+    except Exception as e:
+        print(f"❌ Error in recommend_crops: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
 
 @app.route("/crop-soil", methods=["GET"])
 def crop_soil():
@@ -152,10 +155,10 @@ def home():
         "has_sensor_data": latest_sensor_data is not None,
         "latest_recommendation": latest_recommendation,
         "endpoints": [
-            "POST /sensor-data - Send sensor data (N, P, K, rainfall, temperature)",
-            "GET /recommend-crops - Get crop recommendation",
-            "GET /crop-soil?crop=<name> - Get soil info",
-            "GET /fertilizer?crop=<name> - Get fertilizer plan"
+            "POST /sensor-data",
+            "GET /recommend-crops",
+            "GET /crop-soil?crop=<name>",
+            "GET /fertilizer?crop=<name>"
         ]
     })
 
