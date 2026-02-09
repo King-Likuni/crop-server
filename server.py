@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import joblib
 import traceback
 import os
+import pandas as pd
 
 app = Flask(__name__)
 
@@ -20,10 +21,23 @@ try:
         print("✅ Model loaded successfully")
     else:
         print("❌ Model files not found")
-        print(f"Current directory: {os.getcwd()}")
-        print(f"Files in directory: {os.listdir('.')}")
 except Exception as e:
     print("⚠️ Could not load model:", e)
+    print(traceback.format_exc())
+
+# ----------------------------
+# Load Dataset for Ideal Soil
+# ----------------------------
+dataset = None
+try:
+    if os.path.exists("Final_crop_data.csv"):
+        dataset = pd.read_csv("Final_crop_data.csv")
+        print("✅ Dataset loaded successfully")
+        print(f"Dataset shape: {dataset.shape}")
+    else:
+        print("❌ Final_crop_data.csv not found")
+except Exception as e:
+    print("⚠️ Could not load dataset:", e)
     print(traceback.format_exc())
 
 # ----------------------------
@@ -128,23 +142,71 @@ def crop_soil():
     })
 
 # ----------------------------
-# Fertilizer plans
+# Ideal soil values from dataset
+# ----------------------------
+@app.route("/ideal-soil", methods=["GET"])
+def ideal_soil():
+    global dataset
+    crop = request.args.get("crop", "").lower()
+
+    if dataset is None:
+        return jsonify({"error": "Dataset not loaded"}), 500
+    if not crop:
+        return jsonify({"error": "Crop name required"}), 400
+
+    crop_data = dataset[dataset["label"].str.lower() == crop]
+    if crop_data.empty:
+        return jsonify({"error": "Crop not found"}), 404
+
+    ideal = {
+        "N": {"min": float(crop_data["N"].min()), "max": float(crop_data["N"].max())},
+        "P": {"min": float(crop_data["P"].min()), "max": float(crop_data["P"].max())},
+        "K": {"min": float(crop_data["K"].min()), "max": float(crop_data["K"].max())},
+        "temperature": {"min": float(crop_data["temperature"].min()), "max": float(crop_data["temperature"].max())},
+        "rainfall": {"min": float(crop_data["rainfall"].min()), "max": float(crop_data["rainfall"].max())},
+        "pH": {"min": float(crop_data["pH"].min()), "max": float(crop_data["pH"].max())},
+    }
+
+    return jsonify({"crop": crop, "ideal_soil": ideal, "status": "success"})
+
+# ----------------------------
+# Fertilizer plans (dynamic suggestion based on sensor vs ideal)
 # ----------------------------
 @app.route("/fertilizer", methods=["GET"])
 def fertilizer():
+    global latest_sensor_data, dataset
     crop = request.args.get("crop", "").lower()
-    fertilizer_plans = {
-        "maize": "NPK 15-15-15 at planting, Urea top dressing at 6 weeks",
-        "mango": "10-10-10 NPK quarterly, add compost annually",
-        "groundnuts": "Phosphate at planting, no nitrogen needed",
-        "cowpeas": "Low nitrogen, focus on phosphorus and potassium",
-        "beans": "20-20-20 at planting, magnesium supplement",
-        "watermelon": "Balanced NPK, high potassium during fruiting"
-    }
+    if not crop:
+        return jsonify({"error": "Crop name required"}), 400
+
+    # Get ideal soil values
+    ideal_data = dataset[dataset["label"].str.lower() == crop]
+    if ideal_data.empty:
+        return jsonify({"error": "Crop not found in dataset"}), 404
+
+    if latest_sensor_data is None:
+        return jsonify({"error": "No sensor data available"}), 404
+
+    plan = []
+    # Compare sensor values to ideal ranges
+    for nutrient in ["N", "P", "K", "pH", "temperature"]:
+        sensor_val = latest_sensor_data.get(nutrient if nutrient != "pH" else "pH", None)
+        ideal_min = float(ideal_data[nutrient].min())
+        ideal_max = float(ideal_data[nutrient].max())
+        if sensor_val is not None:
+            if sensor_val < ideal_min:
+                plan.append(f"{nutrient} low: consider increasing")
+            elif sensor_val > ideal_max:
+                plan.append(f"{nutrient} high: consider reducing")
+
+    if not plan:
+        plan.append("Soil conditions are optimal for this crop.")
+
     return jsonify({
         "crop": crop,
-        "plan": fertilizer_plans.get(crop, "Standard NPK recommended"),
-        "timing": "Apply during planting and growth stages"
+        "sensor_data": latest_sensor_data,
+        "fertilizer_suggestions": plan,
+        "status": "success"
     })
 
 # ----------------------------
@@ -161,6 +223,7 @@ def home():
             "POST /sensor-data",
             "GET /recommend-crops",
             "GET /crop-soil?crop=<name>",
+            "GET /ideal-soil?crop=<name>",
             "GET /fertilizer?crop=<name>"
         ]
     })
@@ -170,3 +233,4 @@ def home():
 # ----------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000, debug=True)
+
