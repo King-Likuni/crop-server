@@ -3,6 +3,7 @@ import joblib
 import traceback
 import os
 import pandas as pd
+import numpy as np
 
 app = Flask(__name__)
 
@@ -26,7 +27,7 @@ except Exception as e:
     print(traceback.format_exc())
 
 # ----------------------------
-# Load Dataset for Ideal Soil
+# Load dataset for ideal soil
 # ----------------------------
 dataset = None
 try:
@@ -41,13 +42,47 @@ except Exception as e:
     print(traceback.format_exc())
 
 # ----------------------------
+# Load feature statistics for Z-score validation
+# ----------------------------
+FEATURE_NAMES = ["N", "P", "K", "moisture", "temperature", "pH"]
+feature_means = None
+feature_stds = None
+Z_THRESHOLD = 3.0  # max allowed Z-score
+
+try:
+    if os.path.exists("feature_means.pkl") and os.path.exists("feature_stds.pkl"):
+        feature_means = joblib.load("feature_means.pkl")
+        feature_stds = joblib.load("feature_stds.pkl")
+        print("✅ Feature statistics loaded for Z-score validation")
+        print("Means:", feature_means)
+        print("Stds :", feature_stds)
+    else:
+        print("❌ Feature stats not found")
+except Exception as e:
+    print("⚠️ Could not load feature statistics:", e)
+    print(traceback.format_exc())
+
+# ----------------------------
 # Global storage for latest data
 # ----------------------------
 latest_sensor_data = None
 latest_recommendation = None
 
 # ----------------------------
-# Endpoint: Receive sensor data AND return recommendation
+# Helper: Check if data is within Z-score bounds
+# ----------------------------
+def is_within_zscore(sensor_values):
+    global feature_means, feature_stds, FEATURE_NAMES, Z_THRESHOLD
+    if feature_means is None or feature_stds is None:
+        return True  # fallback if stats not loaded
+
+    sensor_array = np.array([sensor_values.get(f, 0) for f in FEATURE_NAMES])
+    z_scores = np.abs((sensor_array - feature_means) / feature_stds)
+    print("🔍 Z-scores:", dict(zip(FEATURE_NAMES, z_scores)))
+    return np.all(z_scores <= Z_THRESHOLD)
+
+# ----------------------------
+# Endpoint: Receive sensor data
 # ----------------------------
 @app.route("/sensor-data", methods=["POST"])
 def sensor_data():
@@ -68,28 +103,26 @@ def sensor_data():
         }
         print(f"📡 Received sensor data: {latest_sensor_data}")
 
-        # Predict recommended crop
-        if model_loaded:
-            try:
-                features = [
-                    latest_sensor_data["N"],
-                    latest_sensor_data["P"],
-                    latest_sensor_data["K"],
-                    latest_sensor_data["moisture"],
-                    latest_sensor_data["temperature"],
-                    latest_sensor_data["pH"]
-                ]
-                print(f"🤖 Predicting with features: {features}")
-                prediction_index = model.predict([features])[0]
-                latest_recommendation = le.inverse_transform([prediction_index])[0]
-                print(f"🌱 Model predicted: {latest_recommendation}")
-            except Exception as e:
-                print(f"❌ Prediction error: {e}")
-                print(traceback.format_exc())
-                latest_recommendation = "Prediction failed"
+        # Z-score validation
+        if not is_within_zscore(latest_sensor_data):
+            latest_recommendation = "No crop recommended (out-of-scope values)"
+            print("⚠️ Sensor data out of model scope!")
         else:
-            # Fallback rule-based recommendation
-            latest_recommendation = "maize" if latest_sensor_data["temperature"] > 25 else "wheat"
+            # Predict recommended crop
+            if model_loaded:
+                try:
+                    features = [latest_sensor_data[f] for f in FEATURE_NAMES]
+                    print(f"🤖 Predicting with features: {features}")
+                    prediction_index = model.predict([features])[0]
+                    latest_recommendation = le.inverse_transform([prediction_index])[0]
+                    print(f"🌱 Model predicted: {latest_recommendation}")
+                except Exception as e:
+                    print(f"❌ Prediction error: {e}")
+                    print(traceback.format_exc())
+                    latest_recommendation = "Prediction failed"
+            else:
+                # Fallback rule-based
+                latest_recommendation = "maize" if latest_sensor_data["temperature"] > 25 else "wheat"
 
         return jsonify({
             "status": "success",
@@ -148,7 +181,6 @@ def crop_soil():
 def ideal_soil():
     global dataset
     crop = request.args.get("crop", "").lower()
-
     if dataset is None:
         return jsonify({"error": "Dataset not loaded"}), 500
     if not crop:
@@ -163,14 +195,14 @@ def ideal_soil():
         "P": {"min": float(crop_data["P"].min()), "max": float(crop_data["P"].max())},
         "K": {"min": float(crop_data["K"].min()), "max": float(crop_data["K"].max())},
         "temperature": {"min": float(crop_data["temperature"].min()), "max": float(crop_data["temperature"].max())},
-        "rainfall": {"min": float(crop_data["rainfall"].min()), "max": float(crop_data["rainfall"].max())},
+        "moisture": {"min": float(crop_data["moisture"].min()), "max": float(crop_data["moisture"].max())},
         "pH": {"min": float(crop_data["pH"].min()), "max": float(crop_data["pH"].max())},
     }
 
     return jsonify({"crop": crop, "ideal_soil": ideal, "status": "success"})
 
 # ----------------------------
-# Fertilizer plans (dynamic suggestion based on sensor vs ideal)
+# Fertilizer plans
 # ----------------------------
 @app.route("/fertilizer", methods=["GET"])
 def fertilizer():
@@ -189,8 +221,8 @@ def fertilizer():
 
     plan = []
     # Compare sensor values to ideal ranges
-    for nutrient in ["N", "P", "K", "pH", "temperature"]:
-        sensor_val = latest_sensor_data.get(nutrient if nutrient != "pH" else "pH", None)
+    for nutrient in ["N", "P", "K", "pH", "temperature", "moisture"]:
+        sensor_val = latest_sensor_data.get(nutrient, None)
         ideal_min = float(ideal_data[nutrient].min())
         ideal_max = float(ideal_data[nutrient].max())
         if sensor_val is not None:
@@ -233,4 +265,5 @@ def home():
 # ----------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000, debug=True)
+
 
