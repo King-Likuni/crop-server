@@ -15,7 +15,7 @@ FEATURE_NAMES = ["N", "P", "K", "moisture", "temperature", "pH"]
 Z_THRESHOLD = 3.0
 CONFIDENCE_THRESHOLD = 0.60
 
-# Absolute physical sanity limits (extra safety)
+# Physical safety limits (absolute impossible values)
 PHYSICAL_LIMITS = {
     "N": (0, 200),
     "P": (0, 200),
@@ -26,7 +26,7 @@ PHYSICAL_LIMITS = {
 }
 
 # =========================================================
-# LOAD MODEL + ENCODER
+# LOAD MODEL + LABEL ENCODER
 # =========================================================
 model = None
 le = None
@@ -45,7 +45,7 @@ except Exception as e:
     print(traceback.format_exc())
 
 # =========================================================
-# LOAD FEATURE STATS
+# LOAD FEATURE STATISTICS (for Z-score validation)
 # =========================================================
 feature_means = None
 feature_stds = None
@@ -61,10 +61,11 @@ except Exception as e:
     print("⚠️ Failed to load feature stats:", e)
 
 # =========================================================
-# MEMORY STORAGE (temporary)
+# TEMP MEMORY (replace with DB later if needed)
 # =========================================================
 latest_sensor_data = {}
 latest_recommendation = None
+latest_confidence = None
 
 # =========================================================
 # VALIDATION FUNCTIONS
@@ -79,7 +80,7 @@ def within_physical_limits(sensor_values):
 
 def within_zscore(sensor_values):
     if feature_means is None or feature_stds is None:
-        # If stats missing, safer to reject
+        # Safer to reject if stats missing
         return False
 
     try:
@@ -91,16 +92,16 @@ def within_zscore(sensor_values):
 
 
 # =========================================================
-# POST: SENSOR DATA
+# POST: RECEIVE SENSOR DATA
 # =========================================================
 @app.route("/sensor-data", methods=["POST"])
 def sensor_data():
-    global latest_sensor_data, latest_recommendation
+    global latest_sensor_data, latest_recommendation, latest_confidence
 
     try:
         data = request.get_json(force=True)
 
-        # Validate required keys
+        # Validate required fields
         for key in FEATURE_NAMES:
             if key not in data:
                 return jsonify({
@@ -108,48 +109,55 @@ def sensor_data():
                     "message": f"Missing key: {key}"
                 }), 400
 
-        # Convert to float
+        # Convert safely to float
         latest_sensor_data = {
             key: float(data[key]) for key in FEATURE_NAMES
         }
 
         print("📡 Sensor data:", latest_sensor_data)
 
+        latest_confidence = None
+
         # -------------------------------------------------
         # 1️⃣ Physical validation
         # -------------------------------------------------
         if not within_physical_limits(latest_sensor_data):
-            latest_recommendation = "No crop recommended (physically impossible values)"
+            latest_recommendation = "No crop recommended"
 
         # -------------------------------------------------
         # 2️⃣ Z-score validation
         # -------------------------------------------------
         elif not within_zscore(latest_sensor_data):
-            latest_recommendation = "No crop recommended (out-of-training distribution)"
+            latest_recommendation = "No crop recommended"
 
         # -------------------------------------------------
-        # 3️⃣ ML Prediction
+        # 3️⃣ ML Prediction with 60% confidence threshold
         # -------------------------------------------------
         elif model_loaded:
+
             features = [latest_sensor_data[f] for f in FEATURE_NAMES]
 
             prediction_index = model.predict([features])[0]
             probabilities = model.predict_proba([features])[0]
+
             confidence = float(np.max(probabilities))
+            latest_confidence = round(confidence, 2)
+
+            print("🔎 Model confidence:", confidence)
 
             if confidence < CONFIDENCE_THRESHOLD:
-                latest_recommendation = "No crop recommended (low model confidence)"
+                latest_recommendation = "No crop recommended"
             else:
                 latest_recommendation = le.inverse_transform([prediction_index])[0]
 
         else:
-            latest_recommendation = "Model unavailable"
+            latest_recommendation = "No crop recommended"
 
         return jsonify({
             "status": "success",
             "sensor_data": latest_sensor_data,
             "recommended_crop": latest_recommendation,
-            "model_loaded": model_loaded
+            "confidence": latest_confidence
         })
 
     except Exception as e:
@@ -175,6 +183,7 @@ def recommend_crops():
     return jsonify({
         "status": "success",
         "recommended_crop": latest_recommendation,
+        "confidence": latest_confidence,
         "sensor_data": latest_sensor_data
     })
 
@@ -193,8 +202,9 @@ def home():
 
 
 # =========================================================
-# RUN
+# RUN SERVER
 # =========================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
 
