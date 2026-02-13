@@ -3,15 +3,31 @@ from flask_cors import CORS
 import joblib
 import traceback
 import os
-import pandas as pd
 import numpy as np
 
 app = Flask(__name__)
-CORS(app)  # ✅ Allow app to access API
+CORS(app)
 
-# ----------------------------
-# Load ML model and label encoder
-# ----------------------------
+# =========================================================
+# CONFIGURATION
+# =========================================================
+FEATURE_NAMES = ["N", "P", "K", "moisture", "temperature", "pH"]
+Z_THRESHOLD = 3.0
+CONFIDENCE_THRESHOLD = 0.60
+
+# Absolute physical sanity limits (extra safety)
+PHYSICAL_LIMITS = {
+    "N": (0, 200),
+    "P": (0, 200),
+    "K": (0, 300),
+    "moisture": (0, 100),
+    "temperature": (-10, 60),
+    "pH": (3.0, 10.0)
+}
+
+# =========================================================
+# LOAD MODEL + ENCODER
+# =========================================================
 model = None
 le = None
 model_loaded = False
@@ -25,29 +41,12 @@ try:
     else:
         print("❌ Model files not found")
 except Exception as e:
-    print("⚠️ Could not load model:", e)
+    print("⚠️ Model loading failed:", e)
     print(traceback.format_exc())
 
-# ----------------------------
-# Load dataset
-# ----------------------------
-dataset = None
-try:
-    if os.path.exists("Final_crop_data.csv"):
-        dataset = pd.read_csv("Final_crop_data.csv")
-        print("✅ Dataset loaded successfully")
-    else:
-        print("❌ Final_crop_data.csv not found")
-except Exception as e:
-    print("⚠️ Could not load dataset:", e)
-    print(traceback.format_exc())
-
-# ----------------------------
-# Feature configuration
-# ----------------------------
-FEATURE_NAMES = ["N", "P", "K", "moisture", "temperature", "pH"]
-Z_THRESHOLD = 3.0
-
+# =========================================================
+# LOAD FEATURE STATS
+# =========================================================
 feature_means = None
 feature_stds = None
 
@@ -56,21 +55,32 @@ try:
         feature_means = joblib.load("feature_means.pkl")
         feature_stds = joblib.load("feature_stds.pkl")
         print("✅ Feature statistics loaded")
-except:
-    print("⚠️ Feature stats not found")
+    else:
+        print("❌ Feature stats not found")
+except Exception as e:
+    print("⚠️ Failed to load feature stats:", e)
 
-# ----------------------------
-# Temporary storage (replace with DB later)
-# ----------------------------
+# =========================================================
+# MEMORY STORAGE (temporary)
+# =========================================================
 latest_sensor_data = {}
 latest_recommendation = None
 
-# ----------------------------
-# Z-score validation
-# ----------------------------
-def is_within_zscore(sensor_values):
+# =========================================================
+# VALIDATION FUNCTIONS
+# =========================================================
+
+def within_physical_limits(sensor_values):
+    for key, (min_val, max_val) in PHYSICAL_LIMITS.items():
+        if not (min_val <= sensor_values[key] <= max_val):
+            return False
+    return True
+
+
+def within_zscore(sensor_values):
     if feature_means is None or feature_stds is None:
-        return True
+        # If stats missing, safer to reject
+        return False
 
     try:
         sensor_array = np.array([sensor_values[f] for f in FEATURE_NAMES])
@@ -79,9 +89,10 @@ def is_within_zscore(sensor_values):
     except:
         return False
 
-# ----------------------------
-# POST: Receive sensor data
-# ----------------------------
+
+# =========================================================
+# POST: SENSOR DATA
+# =========================================================
 @app.route("/sensor-data", methods=["POST"])
 def sensor_data():
     global latest_sensor_data, latest_recommendation
@@ -92,42 +103,67 @@ def sensor_data():
         # Validate required keys
         for key in FEATURE_NAMES:
             if key not in data:
-                return jsonify({"status": "error", "message": f"Missing key: {key}"}), 400
+                return jsonify({
+                    "status": "error",
+                    "message": f"Missing key: {key}"
+                }), 400
 
-        # Convert to float safely
+        # Convert to float
         latest_sensor_data = {
             key: float(data[key]) for key in FEATURE_NAMES
         }
 
         print("📡 Sensor data:", latest_sensor_data)
 
-        # Z-score validation
-        if not is_within_zscore(latest_sensor_data):
-            latest_recommendation = "No crop recommended (out-of-range values)"
-        else:
-            if model_loaded:
-                features = [latest_sensor_data[f] for f in FEATURE_NAMES]
-                prediction_index = model.predict([features])[0]
-                latest_recommendation = le.inverse_transform([prediction_index])[0]
+        # -------------------------------------------------
+        # 1️⃣ Physical validation
+        # -------------------------------------------------
+        if not within_physical_limits(latest_sensor_data):
+            latest_recommendation = "No crop recommended (physically impossible values)"
+
+        # -------------------------------------------------
+        # 2️⃣ Z-score validation
+        # -------------------------------------------------
+        elif not within_zscore(latest_sensor_data):
+            latest_recommendation = "No crop recommended (out-of-training distribution)"
+
+        # -------------------------------------------------
+        # 3️⃣ ML Prediction
+        # -------------------------------------------------
+        elif model_loaded:
+            features = [latest_sensor_data[f] for f in FEATURE_NAMES]
+
+            prediction_index = model.predict([features])[0]
+            probabilities = model.predict_proba([features])[0]
+            confidence = float(np.max(probabilities))
+
+            if confidence < CONFIDENCE_THRESHOLD:
+                latest_recommendation = "No crop recommended (low model confidence)"
             else:
-                latest_recommendation = "maize" if latest_sensor_data["temperature"] > 25 else "wheat"
+                latest_recommendation = le.inverse_transform([prediction_index])[0]
+
+        else:
+            latest_recommendation = "Model unavailable"
 
         return jsonify({
             "status": "success",
             "sensor_data": latest_sensor_data,
             "recommended_crop": latest_recommendation,
-            "model_used": "ML" if model_loaded else "fallback"
+            "model_loaded": model_loaded
         })
 
     except Exception as e:
         print("❌ Error:", e)
         print(traceback.format_exc())
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
 
 
-# ----------------------------
-# GET: Recommendation
-# ----------------------------
+# =========================================================
+# GET: LATEST RECOMMENDATION
+# =========================================================
 @app.route("/recommend-crops", methods=["GET"])
 def recommend_crops():
     if not latest_sensor_data:
@@ -143,52 +179,22 @@ def recommend_crops():
     })
 
 
-# ----------------------------
-# GET: Ideal soil
-# ----------------------------
-@app.route("/ideal-soil", methods=["GET"])
-def ideal_soil():
-    if dataset is None:
-        return jsonify({"status": "error", "message": "Dataset not loaded"}), 500
-
-    crop = request.args.get("crop", "").lower()
-    if not crop:
-        return jsonify({"status": "error", "message": "Crop required"}), 400
-
-    crop_data = dataset[dataset["label"].str.lower() == crop]
-
-    if crop_data.empty:
-        return jsonify({"status": "error", "message": "Crop not found"}), 404
-
-    ideal = {
-        feature: {
-            "min": float(crop_data[feature].min()),
-            "max": float(crop_data[feature].max())
-        } for feature in FEATURE_NAMES
-    }
-
-    return jsonify({
-        "status": "success",
-        "crop": crop,
-        "ideal_soil": ideal
-    })
-
-
-# ----------------------------
-# GET: Home
-# ----------------------------
+# =========================================================
+# HEALTH CHECK
+# =========================================================
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
         "status": "online",
         "model_loaded": model_loaded,
-        "has_sensor_data": bool(latest_sensor_data),
+        "feature_stats_loaded": feature_means is not None,
         "latest_recommendation": latest_recommendation
     })
 
 
-# ----------------------------
-# Run
-# ----------------------------
+# =========================================================
+# RUN
+# =========================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
