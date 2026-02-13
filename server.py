@@ -12,7 +12,7 @@ CORS(app)
 # CONFIGURATION
 # =========================================================
 FEATURE_NAMES = ["N", "P", "K", "moisture", "temperature", "pH"]
-Z_THRESHOLD = 5.0  # relaxed z-score check
+Z_THRESHOLD = 3.0  # relaxed z-score check
 
 # Absolute physical sanity limits (extra safety)
 PHYSICAL_LIMITS = {
@@ -122,7 +122,7 @@ def sensor_data():
         # 2️⃣ Z-score validation
         # -------------------------------------------------
         elif not within_zscore(latest_sensor_data):
-            latest_recommendation = "No crop recommended (out-of-training distribution)"
+            latest_recommendation = "No crop recommended"
 
         # -------------------------------------------------
         # 3️⃣ ML Prediction
