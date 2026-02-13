@@ -12,7 +12,7 @@ CORS(app)
 # CONFIGURATION
 # =========================================================
 FEATURE_NAMES = ["N", "P", "K", "moisture", "temperature", "pH"]
-Z_THRESHOLD = 3.5          # relaxed enough to allow real-world variations
+Z_THRESHOLD = 5.0          # relaxed enough to allow real-world variations
 CONFIDENCE_THRESHOLD = 0.60  # 60%
 
 # Absolute physical sanity limits (extra safety)
