@@ -12,10 +12,9 @@ CORS(app)
 # CONFIGURATION
 # =========================================================
 FEATURE_NAMES = ["N", "P", "K", "moisture", "temperature", "pH"]
-Z_THRESHOLD = 3.0
-CONFIDENCE_THRESHOLD = 0.60
+CONFIDENCE_THRESHOLD = 0.60  # Model confidence threshold
 
-# Physical safety limits (absolute impossible values)
+# Absolute physical sanity limits (extra safety)
 PHYSICAL_LIMITS = {
     "N": (0, 200),
     "P": (0, 200),
@@ -26,7 +25,7 @@ PHYSICAL_LIMITS = {
 }
 
 # =========================================================
-# LOAD MODEL + LABEL ENCODER
+# LOAD MODEL + ENCODER
 # =========================================================
 model = None
 le = None
@@ -45,7 +44,7 @@ except Exception as e:
     print(traceback.format_exc())
 
 # =========================================================
-# LOAD FEATURE STATISTICS (for Z-score validation)
+# LOAD FEATURE STATS (Optional)
 # =========================================================
 feature_means = None
 feature_stds = None
@@ -55,13 +54,11 @@ try:
         feature_means = joblib.load("feature_means.pkl")
         feature_stds = joblib.load("feature_stds.pkl")
         print("✅ Feature statistics loaded")
-    else:
-        print("❌ Feature stats not found")
 except Exception as e:
     print("⚠️ Failed to load feature stats:", e)
 
 # =========================================================
-# TEMP MEMORY (replace with DB later if needed)
+# MEMORY STORAGE (temporary)
 # =========================================================
 latest_sensor_data = {}
 latest_recommendation = None
@@ -70,29 +67,26 @@ latest_confidence = None
 # =========================================================
 # VALIDATION FUNCTIONS
 # =========================================================
-
 def within_physical_limits(sensor_values):
+    """Check absolute physical plausibility."""
     for key, (min_val, max_val) in PHYSICAL_LIMITS.items():
         if not (min_val <= sensor_values[key] <= max_val):
             return False
     return True
 
-
-def within_zscore(sensor_values):
+def within_zscore(sensor_values, threshold=3.0):
+    """Check whether values are within z-score limits (optional)."""
     if feature_means is None or feature_stds is None:
-        # Safer to reject if stats missing
-        return False
-
+        return True  # If stats missing, assume valid
     try:
         sensor_array = np.array([sensor_values[f] for f in FEATURE_NAMES])
         z_scores = np.abs((sensor_array - feature_means) / feature_stds)
-        return np.all(z_scores <= Z_THRESHOLD)
+        return np.all(z_scores <= threshold)
     except:
         return False
 
-
 # =========================================================
-# POST: RECEIVE SENSOR DATA
+# POST: SENSOR DATA
 # =========================================================
 @app.route("/sensor-data", methods=["POST"])
 def sensor_data():
@@ -101,7 +95,7 @@ def sensor_data():
     try:
         data = request.get_json(force=True)
 
-        # Validate required fields
+        # Validate required keys
         for key in FEATURE_NAMES:
             if key not in data:
                 return jsonify({
@@ -109,55 +103,43 @@ def sensor_data():
                     "message": f"Missing key: {key}"
                 }), 400
 
-        # Convert safely to float
-        latest_sensor_data = {
-            key: float(data[key]) for key in FEATURE_NAMES
-        }
-
+        # Convert to float
+        latest_sensor_data = {key: float(data[key]) for key in FEATURE_NAMES}
         print("📡 Sensor data:", latest_sensor_data)
 
-        latest_confidence = None
-
-        # -------------------------------------------------
-        # 1️⃣ Physical validation
-        # -------------------------------------------------
+        # 1️⃣ Physical limits check
         if not within_physical_limits(latest_sensor_data):
-            latest_recommendation = "No crop recommended"
+            latest_recommendation = "No crop recommended (physically impossible values)"
+            latest_confidence = 0.0
 
-        # -------------------------------------------------
-        # 2️⃣ Z-score validation
-        # -------------------------------------------------
+        # 2️⃣ Optional Z-score check
         elif not within_zscore(latest_sensor_data):
-            latest_recommendation = "No crop recommended"
+            latest_recommendation = "No crop recommended (out-of-training distribution)"
+            latest_confidence = 0.0
 
-        # -------------------------------------------------
-        # 3️⃣ ML Prediction with 60% confidence threshold
-        # -------------------------------------------------
+        # 3️⃣ ML Prediction
         elif model_loaded:
-
             features = [latest_sensor_data[f] for f in FEATURE_NAMES]
-
             prediction_index = model.predict([features])[0]
             probabilities = model.predict_proba([features])[0]
-
             confidence = float(np.max(probabilities))
-            latest_confidence = round(confidence, 2)
-
-            print("🔎 Model confidence:", confidence)
+            latest_confidence = confidence
 
             if confidence < CONFIDENCE_THRESHOLD:
-                latest_recommendation = "No crop recommended"
+                latest_recommendation = "No crop recommended (low model confidence)"
             else:
                 latest_recommendation = le.inverse_transform([prediction_index])[0]
 
         else:
-            latest_recommendation = "No crop recommended"
+            latest_recommendation = "Model unavailable"
+            latest_confidence = 0.0
 
         return jsonify({
             "status": "success",
             "sensor_data": latest_sensor_data,
             "recommended_crop": latest_recommendation,
-            "confidence": latest_confidence
+            "confidence": latest_confidence,
+            "model_loaded": model_loaded
         })
 
     except Exception as e:
@@ -167,7 +149,6 @@ def sensor_data():
             "status": "error",
             "message": str(e)
         }), 500
-
 
 # =========================================================
 # GET: LATEST RECOMMENDATION
@@ -187,7 +168,6 @@ def recommend_crops():
         "sensor_data": latest_sensor_data
     })
 
-
 # =========================================================
 # HEALTH CHECK
 # =========================================================
@@ -197,14 +177,12 @@ def home():
         "status": "online",
         "model_loaded": model_loaded,
         "feature_stats_loaded": feature_means is not None,
-        "latest_recommendation": latest_recommendation
+        "latest_recommendation": latest_recommendation,
+        "latest_confidence": latest_confidence
     })
 
-
 # =========================================================
-# RUN SERVER
+# RUN
 # =========================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
-
-
