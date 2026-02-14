@@ -12,7 +12,7 @@ CORS(app)
 # CONFIGURATION
 # =========================================================
 FEATURE_NAMES = ["N", "P", "K", "moisture", "temperature", "pH"]
-Z_THRESHOLD = 5.0          # relaxed enough to allow real-world variations
+Z_THRESHOLD = 3.0          # relaxed enough to allow real-world variations
 CONFIDENCE_THRESHOLD = 0.60  # 60%
 
 # Absolute physical sanity limits (extra safety)
@@ -129,7 +129,7 @@ def sensor_data():
             latest_confidence = round(confidence, 2)
 
             if confidence < CONFIDENCE_THRESHOLD:
-                latest_recommendation = "No crop recommended (low model confidence)"
+                latest_recommendation = "No crop recommended"
             else:
                 latest_recommendation = le.inverse_transform([prediction_index])[0]
 
